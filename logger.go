@@ -1,38 +1,82 @@
-package advancedlogger
+package loggerLib
 
 import (
-	"log"
-	"os"
+    "context"
+    "log"
+    "os"
+	"fmt"
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+    "go.opentelemetry.io/otel/sdk/resource"
+    sdktrace "go.opentelemetry.io/otel/sdk/trace"
+    "go.opentelemetry.io/otel/trace"
 )
 
 type Logger struct {
-	infoLogger  *log.Logger
-	errorLogger *log.Logger
+    tracer      trace.Tracer
+    infoLogger  *log.Logger
+    errorLogger *log.Logger
 }
 
-// NewLogger initializes loggers
-func NewLogger() *Logger {
-	infoFile, _ := os.OpenFile("info.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-	errorFile, _ := os.OpenFile("error.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+func NewLogger(serviceName string) (*Logger, error) {
+    ctx := context.Background()
 
-	return &Logger{
-		infoLogger:  log.New(infoFile, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile),
-		errorLogger: log.New(errorFile, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile),
-	}
+    // OTLP exporter
+    exp, err := otlptracegrpc.New(ctx)
+    if err != nil {
+        return nil, err
+    }
+
+    res, err := resource.New(
+        ctx,
+        resource.WithAttributes(
+            attribute.String("service.name", serviceName),
+        ),
+    )
+    if err != nil {
+        return nil, err
+    }
+
+    tp := sdktrace.NewTracerProvider(
+        sdktrace.WithBatcher(exp),
+        sdktrace.WithResource(res),
+    )
+    otel.SetTracerProvider(tp)
+    tracer := tp.Tracer(serviceName)
+
+    // File loggers
+    infoFile, _ := os.OpenFile("info.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+    errorFile, _ := os.OpenFile("error.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+
+    return &Logger{
+        tracer:      tracer,
+        infoLogger:  log.New(infoFile, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile),
+        errorLogger: log.New(errorFile, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile),
+    }, nil
 }
 
-func (l *Logger) Info(msg string) {
-	l.infoLogger.Println(msg)
+
+func (l *Logger) Info(ctx context.Context, msg string) {
+    l.infoLogger.Println(msg)
+    _, span := l.tracer.Start(ctx, "Info")
+    span.AddEvent(msg)
+    span.End()
 }
 
-func (l *Logger) Error(msg string) {
-	l.errorLogger.Println(msg)
+func (l *Logger) Error(ctx context.Context, msg string) {
+    l.errorLogger.Println(msg)
+    _, span := l.tracer.Start(ctx, "Error")
+    span.AddEvent(msg)
+    span.End()
 }
 
-func (l *Logger) Infof(format string, v ...interface{}) {
-	l.infoLogger.Printf(format, v...)
+func (l *Logger) Infof(ctx context.Context, format string, v ...interface{}) {
+    msg := fmt.Sprintf(format, v...)
+    l.Info(ctx, msg)
 }
 
-func (l *Logger) Errorf(format string, v ...interface{}) {
-	l.errorLogger.Printf(format, v...)
+func (l *Logger) Errorf(ctx context.Context, format string, v ...interface{}) {
+    msg := fmt.Sprintf(format, v...)
+    l.Error(ctx, msg)
 }
